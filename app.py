@@ -3,6 +3,13 @@ import yaml
 import os
 from pathlib import Path
 
+# 보안 참고사항:
+# 이 구현은 개발/데모 목적입니다. 프로덕션 환경에서는:
+# - 비밀번호 해싱 (bcrypt, argon2 등) 구현
+# - 마크다운 콘텐츠 sanitization (unsafe_allow_html 사용 시 XSS 위험)
+# - 환경 변수를 통한 민감 정보 관리
+# - HTTPS 사용 필수
+
 # 페이지 설정
 st.set_page_config(
     page_title="Bluhill Documentation",
@@ -93,7 +100,17 @@ def display_content(content_type):
     )
     
     if selected_file:
+        # 경로 순회 공격 방지: 파일명에 '..' 또는 경로 구분자가 없는지 확인
+        if '..' in selected_file or os.path.sep in selected_file:
+            st.error("⚠️ 잘못된 파일명입니다.")
+            return
+        
         filepath = os.path.join(directory, selected_file)
+        # 최종 경로가 의도한 디렉토리 내에 있는지 확인
+        if not os.path.abspath(filepath).startswith(os.path.abspath(directory)):
+            st.error("⚠️ 잘못된 파일 경로입니다.")
+            return
+        
         content = load_markdown_file(filepath)
         st.markdown(content, unsafe_allow_html=True)
 
