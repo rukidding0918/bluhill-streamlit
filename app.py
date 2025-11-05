@@ -2,6 +2,8 @@ import streamlit as st
 import yaml
 import os
 from pathlib import Path
+from datetime import datetime
+import uuid
 
 # 보안 참고사항:
 # 이 구현은 개발/데모 목적입니다. 프로덕션 환경에서는:
@@ -12,8 +14,8 @@ from pathlib import Path
 
 # 페이지 설정
 st.set_page_config(
-    page_title="Bluhill Documentation",
-    page_icon="📚",
+    page_title="블루힐 한의원",
+    page_icon="🏥",
     layout="wide"
 )
 
@@ -28,6 +30,35 @@ def load_users():
     except FileNotFoundError:
         st.error("users.yaml 파일을 찾을 수 없습니다.")
         return {}
+
+# 데이터 로드 함수들
+def load_data(filename):
+    """YAML 파일에서 데이터를 로드합니다."""
+    try:
+        filepath = f'data/{filename}'
+        if not os.path.exists(filepath):
+            return []
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+            # inquiries, reviews, columns 키에서 데이터 추출
+            key = filename.replace('.yaml', '')
+            return data.get(key, []) if data else []
+    except Exception as e:
+        st.error(f"데이터 로드 중 오류 발생: {str(e)}")
+        return []
+
+def save_data(filename, data):
+    """데이터를 YAML 파일에 저장합니다."""
+    try:
+        filepath = f'data/{filename}'
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        key = filename.replace('.yaml', '')
+        with open(filepath, 'w', encoding='utf-8') as f:
+            yaml.dump({key: data}, f, allow_unicode=True, default_flow_style=False)
+        return True
+    except Exception as e:
+        st.error(f"데이터 저장 중 오류 발생: {str(e)}")
+        return False
 
 # 세션 상태 초기화
 if 'logged_in' not in st.session_state:
@@ -67,64 +98,311 @@ def load_markdown_file(filepath):
     except Exception as e:
         return f"⚠️ 파일을 읽는 중 오류가 발생했습니다: {str(e)}"
 
-def list_markdown_files(directory):
-    """디렉토리 내의 마크다운 파일 목록을 반환합니다."""
-    path = Path(directory)
-    if not path.exists():
-        return []
-    return sorted([f.name for f in path.glob('*.md')])
-
-def display_content(content_type):
-    """콘텐츠 타입에 따라 마크다운 파일을 표시합니다."""
-    directory_map = {
-        'public': 'content/public',
-        'user': 'content/user',
-        'special': 'content/special'
+def display_public_content(category, subcategory):
+    """공개 콘텐츠를 표시합니다."""
+    # 파일명 매핑
+    file_mapping = {
+        "한의원": {
+            "의료진": "01_의료진.md",
+            "위치및진료시간": "02_위치및진료시간.md",
+            "칼럼": "03_칼럼.md"
+        },
+        "진료과목": {
+            "통증치료": "04_통증치료.md",
+            "추나요법": "05_추나요법.md",
+            "녹용한약": "06_녹용한약.md",
+            "공진단": "07_공진단.md"
+        }
     }
-    
-    directory = directory_map.get(content_type)
-    if not directory:
+
+    filename = file_mapping.get(category, {}).get(subcategory)
+    if not filename:
+        st.error("콘텐츠를 찾을 수 없습니다.")
         return
-    
-    files = list_markdown_files(directory)
-    
-    if not files:
-        st.info(f"📄 {content_type} 콘텐츠가 아직 없습니다.")
+
+    filepath = os.path.join('content/public', filename)
+
+    # 경로 순회 공격 방지
+    if '..' in filename or os.path.sep in filename:
+        st.error("⚠️ 잘못된 파일명입니다.")
         return
-    
-    # 파일 선택
-    selected_file = st.selectbox(
-        f"📄 {content_type.upper()} 문서 선택",
-        files,
-        key=f"file_select_{content_type}"
+
+    if not os.path.abspath(filepath).startswith(os.path.abspath('content/public')):
+        st.error("⚠️ 잘못된 파일 경로입니다.")
+        return
+
+    content = load_markdown_file(filepath)
+
+    # 칼럼 페이지인 경우 저장된 칼럼 목록도 표시
+    if subcategory == "칼럼":
+        st.markdown(content)
+        st.divider()
+
+        columns_data = load_data('columns.yaml')
+        if columns_data:
+            st.subheader("📰 작성된 칼럼")
+            for col in sorted(columns_data, key=lambda x: x['created_at'], reverse=True):
+                with st.expander(f"📝 {col['title']} - {col['created_at'][:10]}"):
+                    st.markdown(f"**작성자**: {col['author']}")
+                    st.markdown(f"**작성일**: {col['created_at']}")
+                    st.divider()
+                    st.markdown(col['content'])
+        else:
+            st.info("아직 작성된 칼럼이 없습니다.")
+    else:
+        st.markdown(content)
+
+def show_inquiry_form():
+    """문의글 작성 폼을 표시합니다."""
+    st.subheader("💬 문의글 작성")
+
+    with st.form("inquiry_form"):
+        title = st.text_input("제목", max_chars=100)
+        content = st.text_area("내용", height=200)
+        is_private = st.checkbox("비공개 문의 (작성자와 관리자만 볼 수 있습니다)")
+
+        submitted = st.form_submit_button("문의글 등록", use_container_width=True)
+
+        if submitted:
+            if not title or not content:
+                st.error("제목과 내용을 모두 입력해주세요.")
+            else:
+                inquiries = load_data('inquiries.yaml')
+                new_inquiry = {
+                    'id': str(uuid.uuid4()),
+                    'author': st.session_state.username,
+                    'author_name': st.session_state.user_name,
+                    'title': title,
+                    'content': content,
+                    'is_private': is_private,
+                    'answered': False,
+                    'answer': None,
+                    'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                inquiries.append(new_inquiry)
+                if save_data('inquiries.yaml', inquiries):
+                    st.success("문의글이 등록되었습니다!")
+                    st.rerun()
+
+def show_inquiry_list():
+    """문의글 목록을 표시합니다."""
+    st.subheader("💬 문의글 목록")
+
+    inquiries = load_data('inquiries.yaml')
+
+    if not inquiries:
+        st.info("아직 작성된 문의글이 없습니다.")
+        return
+
+    # 사용자별 필터링
+    if st.session_state.role != 'admin':
+        # 일반 사용자: 공개 글 + 본인이 작성한 비공개 글만 표시
+        inquiries = [
+            inq for inq in inquiries
+            if not inq['is_private'] or inq['author'] == st.session_state.username
+        ]
+
+    for inq in sorted(inquiries, key=lambda x: x['created_at'], reverse=True):
+        privacy_badge = "🔒 비공개" if inq['is_private'] else "🌐 공개"
+        answer_badge = "✅ 답변완료" if inq['answered'] else "⏳ 대기중"
+
+        with st.expander(f"{privacy_badge} {answer_badge} | {inq['title']} - {inq['author_name']} ({inq['created_at'][:10]})"):
+            st.markdown(f"**작성자**: {inq['author_name']}")
+            st.markdown(f"**작성일**: {inq['created_at']}")
+            st.markdown(f"**공개여부**: {privacy_badge}")
+            st.divider()
+            st.markdown("**문의 내용:**")
+            st.write(inq['content'])
+
+            if inq['answered']:
+                st.divider()
+                st.markdown("**답변:**")
+                st.info(inq['answer'])
+
+def show_review_form():
+    """후기 작성 폼을 표시합니다."""
+    st.subheader("⭐ 후기 작성")
+
+    with st.form("review_form"):
+        title = st.text_input("제목", max_chars=100)
+        content = st.text_area("내용", height=200)
+
+        submitted = st.form_submit_button("후기 등록", use_container_width=True)
+
+        if submitted:
+            if not title or not content:
+                st.error("제목과 내용을 모두 입력해주세요.")
+            else:
+                reviews = load_data('reviews.yaml')
+                new_review = {
+                    'id': str(uuid.uuid4()),
+                    'author': st.session_state.username,
+                    'author_name': st.session_state.user_name,
+                    'title': title,
+                    'content': content,
+                    'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                reviews.append(new_review)
+                if save_data('reviews.yaml', reviews):
+                    st.success("후기가 등록되었습니다!")
+                    st.rerun()
+
+def show_review_list():
+    """후기 목록을 표시합니다."""
+    st.subheader("⭐ 치료 후기")
+
+    reviews = load_data('reviews.yaml')
+
+    if not reviews:
+        st.info("아직 작성된 후기가 없습니다.")
+        return
+
+    for review in sorted(reviews, key=lambda x: x['created_at'], reverse=True):
+        with st.expander(f"⭐ {review['title']} - {review['author_name']} ({review['created_at'][:10]})"):
+            st.markdown(f"**작성자**: {review['author_name']}")
+            st.markdown(f"**작성일**: {review['created_at']}")
+            st.divider()
+            st.markdown(review['content'])
+
+def show_admin_inquiry_management():
+    """관리자 문의글 관리 페이지를 표시합니다."""
+    st.subheader("🔧 문의글 관리")
+
+    # 필터
+    filter_option = st.radio(
+        "필터",
+        ["전체", "답변 대기", "답변 완료"],
+        horizontal=True
     )
-    
-    if selected_file:
-        # 경로 순회 공격 방지: 파일명에 '..' 또는 경로 구분자가 없는지 확인
-        if '..' in selected_file or os.path.sep in selected_file:
-            st.error("⚠️ 잘못된 파일명입니다.")
-            return
-        
-        filepath = os.path.join(directory, selected_file)
-        # 최종 경로가 의도한 디렉토리 내에 있는지 확인
-        if not os.path.abspath(filepath).startswith(os.path.abspath(directory)):
-            st.error("⚠️ 잘못된 파일 경로입니다.")
-            return
-        
-        content = load_markdown_file(filepath)
-        st.markdown(content, unsafe_allow_html=True)
+
+    inquiries = load_data('inquiries.yaml')
+
+    if not inquiries:
+        st.info("아직 작성된 문의글이 없습니다.")
+        return
+
+    # 필터링
+    if filter_option == "답변 대기":
+        inquiries = [inq for inq in inquiries if not inq['answered']]
+    elif filter_option == "답변 완료":
+        inquiries = [inq for inq in inquiries if inq['answered']]
+
+    for idx, inq in enumerate(sorted(inquiries, key=lambda x: x['created_at'], reverse=True)):
+        privacy_badge = "🔒 비공개" if inq['is_private'] else "🌐 공개"
+        answer_badge = "✅ 답변완료" if inq['answered'] else "⏳ 대기중"
+
+        with st.expander(f"{privacy_badge} {answer_badge} | {inq['title']} - {inq['author_name']} ({inq['created_at'][:10]})"):
+            st.markdown(f"**작성자**: {inq['author_name']} ({inq['author']})")
+            st.markdown(f"**작성일**: {inq['created_at']}")
+            st.markdown(f"**공개여부**: {privacy_badge}")
+            st.divider()
+            st.markdown("**문의 내용:**")
+            st.write(inq['content'])
+
+            st.divider()
+
+            # 답변 폼
+            if inq['answered']:
+                st.markdown("**답변:**")
+                st.info(inq['answer'])
+                if st.button("답변 수정", key=f"edit_{inq['id']}"):
+                    st.session_state[f"editing_{inq['id']}"] = True
+                    st.rerun()
+
+                if st.session_state.get(f"editing_{inq['id']}", False):
+                    new_answer = st.text_area("답변 수정", value=inq['answer'], key=f"answer_edit_{inq['id']}")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("수정 완료", key=f"save_edit_{inq['id']}", use_container_width=True):
+                            all_inquiries = load_data('inquiries.yaml')
+                            for i, item in enumerate(all_inquiries):
+                                if item['id'] == inq['id']:
+                                    all_inquiries[i]['answer'] = new_answer
+                                    break
+                            if save_data('inquiries.yaml', all_inquiries):
+                                st.session_state[f"editing_{inq['id']}"] = False
+                                st.success("답변이 수정되었습니다!")
+                                st.rerun()
+                    with col2:
+                        if st.button("취소", key=f"cancel_edit_{inq['id']}", use_container_width=True):
+                            st.session_state[f"editing_{inq['id']}"] = False
+                            st.rerun()
+            else:
+                answer = st.text_area("답변 작성", key=f"answer_{inq['id']}", height=150)
+                if st.button("답변 등록", key=f"submit_{inq['id']}", use_container_width=True):
+                    if answer:
+                        all_inquiries = load_data('inquiries.yaml')
+                        for i, item in enumerate(all_inquiries):
+                            if item['id'] == inq['id']:
+                                all_inquiries[i]['answered'] = True
+                                all_inquiries[i]['answer'] = answer
+                                break
+                        if save_data('inquiries.yaml', all_inquiries):
+                            st.success("답변이 등록되었습니다!")
+                            st.rerun()
+                    else:
+                        st.error("답변 내용을 입력해주세요.")
+
+def show_admin_column_form():
+    """관리자 칼럼 작성 폼을 표시합니다."""
+    st.subheader("📝 칼럼 작성")
+
+    with st.form("column_form"):
+        title = st.text_input("제목", max_chars=100)
+        content = st.text_area("내용", height=400)
+
+        submitted = st.form_submit_button("칼럼 등록", use_container_width=True)
+
+        if submitted:
+            if not title or not content:
+                st.error("제목과 내용을 모두 입력해주세요.")
+            else:
+                columns = load_data('columns.yaml')
+                new_column = {
+                    'id': str(uuid.uuid4()),
+                    'author': st.session_state.user_name,
+                    'title': title,
+                    'content': content,
+                    'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                columns.append(new_column)
+                if save_data('columns.yaml', columns):
+                    st.success("칼럼이 등록되었습니다!")
+                    st.rerun()
+
+    # 기존 칼럼 목록
+    st.divider()
+    st.subheader("📰 작성된 칼럼 목록")
+    columns = load_data('columns.yaml')
+
+    if columns:
+        for col in sorted(columns, key=lambda x: x['created_at'], reverse=True):
+            with st.expander(f"📝 {col['title']} - {col['created_at'][:10]}"):
+                st.markdown(f"**작성자**: {col['author']}")
+                st.markdown(f"**작성일**: {col['created_at']}")
+                st.divider()
+                st.markdown(col['content'])
+
+                if st.button("삭제", key=f"delete_col_{col['id']}"):
+                    all_columns = load_data('columns.yaml')
+                    all_columns = [c for c in all_columns if c['id'] != col['id']]
+                    if save_data('columns.yaml', all_columns):
+                        st.success("칼럼이 삭제되었습니다!")
+                        st.rerun()
+    else:
+        st.info("아직 작성된 칼럼이 없습니다.")
 
 # 메인 애플리케이션
 def main():
     # 사이드바 - 로그인/로그아웃
     with st.sidebar:
         st.title("🔐 인증")
-        
+
         if not st.session_state.logged_in:
             st.subheader("로그인")
             username = st.text_input("사용자명", key="login_username")
             password = st.text_input("비밀번호", type="password", key="login_password")
-            
+
             if st.button("로그인", use_container_width=True):
                 if login(username, password):
                     st.success(f"환영합니다, {st.session_state.user_name}님!")
@@ -134,59 +412,90 @@ def main():
         else:
             st.success(f"👤 {st.session_state.user_name}")
             st.info(f"🎭 역할: {st.session_state.role}")
-            
+
             if st.button("로그아웃", use_container_width=True):
                 logout()
                 st.rerun()
-        
+
         st.divider()
-        
+
         # 사용자 안내
         with st.expander("ℹ️ 테스트 계정"):
             st.markdown("""
             **일반 사용자:**
             - user1 / password1
             - user2 / password2
-            
-            **특별 사용자:**
-            - special1 / special123
-            - special2 / special456
-            
+
             **관리자:**
             - admin1 / admin123
             """)
-    
+
     # 메인 콘텐츠 영역
-    st.title("📚 Bluhill 문서")
-    
-    # 탭 생성
-    tabs = ["🌐 공개 콘텐츠"]
-    if st.session_state.logged_in:
-        tabs.append("👤 사용자 콘텐츠")
-    if st.session_state.logged_in and st.session_state.role in ['special', 'admin']:
-        tabs.append("⭐ 특별 콘텐츠")
-    
-    selected_tab = st.tabs(tabs)
-    
-    # 공개 콘텐츠 탭
-    with selected_tab[0]:
-        st.header("🌐 공개 콘텐츠")
-        st.info("누구나 볼 수 있는 공개 문서입니다.")
-        display_content('public')
-    
-    # 사용자 콘텐츠 탭
-    if st.session_state.logged_in:
-        with selected_tab[1]:
-            st.header("👤 사용자 콘텐츠")
-            st.info("로그인한 사용자만 볼 수 있는 문서입니다.")
-            display_content('user')
-    
-    # 특별 콘텐츠 탭
-    if st.session_state.logged_in and st.session_state.role in ['special', 'admin']:
-        with selected_tab[2]:
-            st.header("⭐ 특별 콘텐츠")
-            st.info("관리자가 승인한 특별 사용자만 볼 수 있는 문서입니다.")
-            display_content('special')
+    st.title("🏥 블루힐 한의원")
+
+    # 메뉴 탭 생성
+    tabs = ["🏥 한의원", "💊 진료과목", "💬 문의하기", "⭐ 치료후기"]
+
+    if st.session_state.role == 'admin':
+        tabs.extend(["🔧 문의글 관리", "📝 칼럼 작성"])
+
+    selected_tabs = st.tabs(tabs)
+
+    # 한의원 탭
+    with selected_tabs[0]:
+        st.header("🏥 한의원 소개")
+        subcategory = st.radio(
+            "메뉴 선택",
+            ["의료진", "위치및진료시간", "칼럼"],
+            horizontal=True,
+            key="clinic_menu"
+        )
+        st.divider()
+        display_public_content("한의원", subcategory)
+
+    # 진료과목 탭
+    with selected_tabs[1]:
+        st.header("💊 진료과목")
+        subcategory = st.radio(
+            "진료과목 선택",
+            ["통증치료", "추나요법", "녹용한약", "공진단"],
+            horizontal=True,
+            key="treatment_menu"
+        )
+        st.divider()
+        display_public_content("진료과목", subcategory)
+
+    # 문의하기 탭
+    with selected_tabs[2]:
+        if st.session_state.logged_in:
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                show_inquiry_form()
+            with col2:
+                show_inquiry_list()
+        else:
+            st.warning("로그인 후 이용 가능합니다.")
+            show_inquiry_list()  # 공개 문의글은 비로그인 상태에서도 볼 수 있음
+
+    # 치료후기 탭
+    with selected_tabs[3]:
+        if st.session_state.logged_in:
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                show_review_form()
+            with col2:
+                show_review_list()
+        else:
+            st.warning("로그인 후 후기 작성이 가능합니다.")
+            show_review_list()  # 후기는 비로그인 상태에서도 볼 수 있음
+
+    # 관리자 전용 탭들
+    if st.session_state.role == 'admin':
+        with selected_tabs[4]:
+            show_admin_inquiry_management()
+
+        with selected_tabs[5]:
+            show_admin_column_form()
 
 if __name__ == "__main__":
     main()
